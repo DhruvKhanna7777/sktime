@@ -56,6 +56,8 @@ class Step:
     params : dict
         The parameters that should be passed to the skobject when calling
         method
+    callback : callable or None, default=None
+        Receives a deep copy of the computed step output.
     """
 
     def __init__(
@@ -65,6 +67,7 @@ class Step:
         input_edges,
         method,
         params,
+        callback=None,
     ):
         self.buffer = None
         self.mode = ""
@@ -73,6 +76,7 @@ class Step:
         self.method = method
         self.input_edges = input_edges
         self.params = params
+        self.callback = callback
 
     def reset(self, reset_buffer=True):
         """Reset the step."""
@@ -192,6 +196,8 @@ class Step:
                     or (self.mode == "proba")
                     else ""
                 )
+                if self.callback is not None and result is not None:
+                    self.callback(deepcopy(result))
                 self._store_to_buffer(result)
                 return StepResult(result, self.mode)
 
