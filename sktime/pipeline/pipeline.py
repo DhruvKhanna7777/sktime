@@ -44,9 +44,9 @@ class Pipeline(BaseEstimator):
         with ``predict_interval`` or ``predict_quantiles`` substituted for ``predict``.
     ``predict_var``, ``predict_proba`` - are currently not supported
     ``get_params``, ``set_params`` uses ``sklearn`` compatible nesting interface
-    ``add_step(skobject, name, edges, method, **kwargs)`` - adds a skobject to the
-        pipeline and setting the name as identifier and the steps specified with
-        edges as input steps (predecessors). Thereby the method that should be
+    ``add_step(skobject, name, edges, method, callback=..., **kwargs)`` - adds a
+        skobject to the pipeline, using the name as identifier and edges as
+        input steps (predecessors). The method that should be
         called can be overridden using the method kwarg. Further provided kwargs
         are directly provided to the skobject if it is called.
 
@@ -68,6 +68,9 @@ class Pipeline(BaseEstimator):
                 that is called on the pipeline (e.g., predict, transform, ..)
             * kwargs: additional kwargs are parameters that are provided to the
                 skobject if fit/predict/.. is called.
+        A step can also specify ``"callback"``, a callable that receives a copy
+        of its output after a successful transform or prediction. See
+        ``add_step`` for details.
 
     Attributes
     ----------
@@ -206,6 +209,10 @@ class Pipeline(BaseEstimator):
                 step_information["method"] = None
             if "kwargs" not in step_information:
                 step_information["kwargs"] = {}
+            callback = step_information.get("callback")
+            if callback is not None and not callable(callback):
+                name = step_information["name"]
+                raise TypeError(f"Callback for step {name!r} must be callable.")
             self.clone_tags(step_information["skobject"])
 
     def _get_unique_id(self, skobject):
@@ -288,7 +295,7 @@ class Pipeline(BaseEstimator):
             return self.assembled_steps[name]
         raise Exception("Required Input does not exist")
 
-    def add_step(self, skobject, name, edges, method=None, **kwargs):
+    def add_step(self, skobject, name, edges, method=None, *, callback=None, **kwargs):
         """Add a new skobject to the pipeline.
 
         This method changes the structure of the pipeline. It looks up if
@@ -309,6 +316,12 @@ class Pipeline(BaseEstimator):
             should be executed when the pipeline calls the provided skobject.
             If not specified, the pipeline selects the method based on the method
             that is called on the pipeline (e.g., predict, transform, ..)
+        callback : callable or None, default=None
+            Receives a deep copy of the step output as its only argument. The
+            callback runs on computed output, including intermediate transforms
+            during fit. It does not run on cached outputs or when a forecaster
+            merely passes through its training data during fit. The pipeline
+            ignores the return value and propagates any exception.
         kwargs: additional kwargs are parameters that are provided to the
             skobject if fit/predict/.. is called.
 
@@ -323,6 +336,8 @@ class Pipeline(BaseEstimator):
                 "kwargs": kwargs,
             }
         )
+        if callback is not None:
+            step["callback"] = callback
         steps = copy(self._steps)
         steps.append(step)
         return Pipeline(steps=steps)
@@ -362,7 +377,12 @@ class Pipeline(BaseEstimator):
                 input_steps[key] = [self._get_step(edg) for edg in edge]
 
             step = Step(
-                cloned_skobject, name, input_steps, method=method, params=kwargs
+                cloned_skobject,
+                name,
+                input_steps,
+                method=method,
+                params=kwargs,
+                callback=step_info.get("callback"),
             )
             if name in self.assembled_steps:
                 raise ValueError(
