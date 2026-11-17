@@ -1,9 +1,12 @@
 from unittest.mock import MagicMock
 
+import pandas as pd
 import pytest
+from pandas.testing import assert_series_equal
 
 from sktime.classification.distance_based import KNeighborsTimeSeriesClassifier
 from sktime.datasets import load_longley
+from sktime.forecasting.naive import NaiveForecaster
 from sktime.pipeline.pipeline import MethodNotImplementedError, Pipeline
 from sktime.transformations.boxcox import BoxCoxTransformer
 from sktime.transformations.exponent import ExponentTransformer
@@ -44,6 +47,66 @@ def test_add_steps(steps):
         pipeline = pipeline.add_step(**step)
     # Plus 2 because of the two start steps
     assert len(steps) == len(pipeline.steps)
+
+
+def test_step_callback_observes_intermediate_output():
+    """Callbacks get intermediate outputs without changing downstream data."""
+    observed = []
+
+    def record(output):
+        observed.append(output.copy())
+        output.iloc[:] = 0
+
+    X = pd.Series([2.0, 3.0, 4.0])
+    pipeline = Pipeline().add_step(
+        ExponentTransformer(power=2, offset=0), "square", {"X": "X"}, callback=record
+    )
+    pipeline = pipeline.add_step(
+        ExponentTransformer(power=2, offset=0), "fourth_power", {"X": "square"}
+    )
+
+    pipeline.fit(X)
+    assert len(observed) == 1
+    assert_series_equal(observed[0], X**2)
+    assert_series_equal(pipeline.transform(X), X**4)
+    assert len(observed) == 2
+    assert_series_equal(observed[1], X**2)
+
+
+def test_step_callback_observes_forecast():
+    """A forecaster callback receives predictions, including on repeated calls."""
+    observed = []
+
+    def record(output):
+        observed.append(output)
+
+    pipeline = Pipeline(
+        steps=[
+            {
+                "skobject": NaiveForecaster(),
+                "name": "forecast",
+                "edges": {"y": "y"},
+                "callback": record,
+            }
+        ]
+    ).clone()
+    pipeline.fit(y=pd.Series([2.0, 3.0, 4.0]), fh=[1])
+    assert observed == []
+
+    expected = pd.Series([4.0], index=pd.RangeIndex(start=3, stop=4))
+    assert_series_equal(pipeline.predict(fh=[1]), expected)
+    assert_series_equal(pipeline.predict(fh=[1]), expected)
+    assert len(observed) == 2
+    for output in observed:
+        assert_series_equal(output, expected)
+
+
+def test_step_callback_must_be_callable():
+    """Report the step name if the callback configuration is invalid."""
+    with pytest.raises(TypeError, match="Callback for step 'square' must be callable"):
+        Pipeline().add_step(
+            ExponentTransformer(), "square", {"X": "X"}, callback="invalid"
+        )
 
 
 def test_add_steps_name_conflict():
